@@ -5,17 +5,16 @@ app = FastAPI()
 
 # --- ENV ---
 API_KEY = os.getenv("IG_API_KEY")
-IDENTIFIER = os.getenv("IG_IDENTIFIER")          # IG Web API demo username
-PASSWORD = os.getenv("IG_PASSWORD")              # IG Web API demo password
-ACCOUNT_ID = os.getenv("IG_ACCOUNT_ID")          # Demo account ID
+IDENTIFIER = os.getenv("IG_IDENTIFIER")
+PASSWORD = os.getenv("IG_PASSWORD")
+ACCOUNT_ID = os.getenv("IG_ACCOUNT_ID")
 BASE = os.getenv("IG_BASE", "https://demo-api.ig.com/gateway/deal")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-EPICS = [e for e in os.getenv("IG_EPICS", "").split(",") if e.strip()]
+EPICS = [e.strip() for e in os.getenv("IG_EPICS", "").split(",") if e.strip()]
 POLL_EVERY_SEC = int(os.getenv("POLL_EVERY_SEC", "2"))
 
-# --- IG helpers ---
+# --- IG login ---
 def ig_login():
-    """POST /session — login (Version: 2)"""
     url = f"{BASE}/session"
     h = {
         "X-IG-API-KEY": API_KEY,
@@ -33,8 +32,8 @@ def ig_login():
     print("[LOGIN] OK, CST/XSEC received:", bool(cst), bool(xsec))
     return cst, xsec
 
+# --- IG account set ---
 def ig_set_account(cst, xsec):
-    """PUT /session — set default account (Version: 1)"""
     url = f"{BASE}/session"
     h = {
         "X-IG-API-KEY": API_KEY,
@@ -46,12 +45,23 @@ def ig_set_account(cst, xsec):
     }
     d = {"accountId": ACCOUNT_ID, "defaultAccount": True}
     r = requests.put(url, headers=h, json=d, timeout=15)
+
+    # 412: аль хэдийн default account → алгасаад үргэлжлүүлнэ
+    if r.status_code == 412:
+        try:
+            body = r.json()
+        except Exception:
+            body = {}
+        if body.get("errorCode") == "error.switch.accountId-must-be-different":
+            print("[SET_ACCOUNT] already default, continue")
+            return
+
     if not r.ok:
         print("[SET_ACCOUNT ERROR]", r.status_code, r.text)
         r.raise_for_status()
 
+# --- IG last price ---
 def ig_last_price(cst, xsec, epic):
-    """GET /prices?epic=...&resolution=SECOND&max=1 — snapshot"""
     url = f"{BASE}/prices"
     params = {"epic": epic, "resolution": "SECOND", "max": 1}
     h = {"X-IG-API-KEY": API_KEY, "CST": cst, "X-SECURITY-TOKEN": xsec, "Version": "3"}
@@ -65,7 +75,7 @@ def ig_last_price(cst, xsec, epic):
     ts = snap.get("updateTimeUTC") or datetime.datetime.utcnow().isoformat() + "Z"
     return {"epic": epic, "bid": snap.get("bid"), "ask": snap.get("ask"), "ts": ts}
 
-# --- Webhook ---
+# --- Webhook forward ---
 def forward_to_webhook(epic, data):
     try:
         r = requests.post(WEBHOOK_URL, json={"epic": epic, **data}, timeout=10)
@@ -99,10 +109,13 @@ def runner():
 
         except requests.HTTPError as e:
             code = e.response.status_code if e.response is not None else None
-            if code in (401, 403, 412):  # refresh tokens / set account again
+            if code in (401, 403):
                 time.sleep(1)
                 cst, xsec = ig_login()
                 ig_set_account(cst, xsec)
+            elif code == 412:
+                print("[WARN] 412 from IG, skipping set_account and continuing")
+                time.sleep(0.5)
             else:
                 print("[ERROR] HTTP:", code, getattr(e.response, "text", ""))
                 time.sleep(2)
@@ -110,7 +123,7 @@ def runner():
             print("[ERROR]", e)
             time.sleep(2)
 
-# health + root
+# --- Endpoints ---
 @app.get("/")
 def root():
     return {"ok": True}
@@ -119,5 +132,5 @@ def root():
 def health():
     return {"ok": True, "epics": EPICS}
 
-# start bg thread
+# --- Start runner thread ---
 threading.Thread(target=runner, daemon=True).start()
