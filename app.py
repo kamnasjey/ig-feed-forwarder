@@ -16,10 +16,30 @@ HEADERS = {"X-IG-API-KEY": API_KEY, "Accept": "application/json"}
 def ig_login():
     url = f"{BASE}/session"
     payload = {"identifier": IDENTIFIER, "password": PASSWORD}
-    h = {**HEADERS, "Content-Type": "application/json", "Version": "2"}
+    h = {
+        **HEADERS,
+        "Content-Type": "application/json; charset=UTF-8",
+        "Accept": "application/json",
+        "Version": "2",
+    }
+    print("[LOGIN] BASE:", BASE)
+    print("[LOGIN] IDENTIFIER:", IDENTIFIER)  # password лог руу хэвлэхгүй!
+
     r = requests.post(url, json=payload, headers=h, timeout=15)
-    r.raise_for_status()
-    return r.headers["CST"], r.headers["X-SECURITY-TOKEN"]
+
+    if not r.ok:
+        # IG яг юугаар унаж байгааг бүрэн харуулах
+        try:
+            print("IG LOGIN ERROR =>", r.status_code, r.text)
+        except Exception:
+            print("IG LOGIN ERROR (no text) =>", r.status_code)
+        r.raise_for_status()
+
+    # Хэвийн тохиолдолд CST/X-SECURITY-TOKEN header ирнэ
+    cst = r.headers.get("CST")
+    xsec = r.headers.get("X-SECURITY-TOKEN")
+    print("[LOGIN] OK, CST/XSEC received:", bool(cst), bool(xsec))
+    return cst, xsec
 
 def ig_set_account(cst, xsec):
     url = f"{BASE}/session"
