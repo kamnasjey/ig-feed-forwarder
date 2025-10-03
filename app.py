@@ -108,16 +108,44 @@ def ig_last_price(cst, xsec, epic):
     ts = p.get("updateTimeUTC") or datetime.datetime.utcnow().isoformat()+"Z"
     return {"epic": epic, "bid": p.get("bid"), "ask": p.get("ask"), "ts": ts}
 
-# --- Webhook forward ---
+# --- rate-limit aware sender ---
+_LAST_POST = {}  # epic -> last_ts (ms)
+
+def now_ms():
+    return int(time.time() * 1000)
+
+MIN_POST_INTERVAL_MS = int(os.getenv("MIN_POST_INTERVAL_MS", "800"))
+POST_RETRY_MAX = int(os.getenv("POST_RETRY_MAX", "3"))
+
 def forward_to_webhook(epic, data):
-    try:
-        r = requests.post(WEBHOOK_URL, json={"epic": epic, **data}, timeout=10)
-        if r.ok:
-            print(f"[POST OK] {epic} -> {WEBHOOK_URL}")
-        else:
-            print(f"[POST FAIL] {epic} {r.status_code} {r.text}")
-    except Exception as e:
-        print(f"[POST ERROR] {epic} {e}")
+    # debounce: нэг epic-ийг MIN_POST_INTERVAL_MS дотор ахин бүү явуул
+    t = now_ms()
+    last = _LAST_POST.get(epic, 0)
+    if t - last < MIN_POST_INTERVAL_MS:
+        return
+    _LAST_POST[epic] = t
+
+    backoff = 1.5
+    wait = 1.0
+    for attempt in range(1, POST_RETRY_MAX + 1):
+        try:
+            r = requests.post(WEBHOOK_URL, json={"epic": epic, **data}, timeout=10)
+            if r.status_code == 429:
+                print(f"[POST 429] {epic} throttled; sleeping {int(wait)}s")
+                time.sleep(wait); wait = min(wait * backoff, 30)
+                continue
+            if r.ok:
+                print(f"[POST OK] {epic} -> {WEBHOOK_URL}")
+                return
+            else:
+                print(f"[POST FAIL] {epic} {r.status_code} {r.text}")
+                return
+        except requests.exceptions.ConnectionError as e:
+            # webhook.site sometimes resets the connection → retry with backoff
+            print(f"[POST ERROR] {epic} connection error: {e}; retry in {int(wait)}s")
+            time.sleep(wait); wait = min(wait * backoff, 30)
+        except Exception as e:
+            print(f"[POST ERROR] {epic} {e}")
 
 # --- Background runner ---
 def runner():
