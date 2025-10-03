@@ -66,25 +66,42 @@ def post_webhook(payload):
         requests.post(WEBHOOK_URL, json=payload, timeout=10)
     except Exception:
         pass
+        
+def forward_to_webhook(epic, data):
+    try:
+        r = requests.post(WEBHOOK_URL, json={"epic": epic, **data}, timeout=10)
+        if r.ok:
+            print(f"[POST OK] {epic} -> {WEBHOOK_URL}")
+        else:
+            print(f"[POST FAIL] {epic} {r.status_code} {r.text}")
+    except Exception as e:
+        print(f"[POST ERROR] {epic} {e}")
 
 def runner():
     if not all([API_KEY, IDENTIFIER, PASSWORD, ACCOUNT_ID, WEBHOOK_URL]):
-        print("ENV дутаж байна. IG_* болон WEBHOOK_URL-ээ Render дээр оруулна уу.")
+        print("ENV дутуу байна. IG_* болон WEBHOOK_URL-ээ Render дээр оруулна уу.")
         return
+
     cst, xsec = ig_login()
     ig_set_account(cst, xsec)
+
     last = {}
     while True:
         try:
             for epic in EPICS:
                 data = ig_last_price(cst, xsec, epic)
                 key = (data["bid"], data["ask"])
+
                 if last.get(epic) != key:
                     last[epic] = key
-                    post_webhook({"source":"ig", **data})
+                    # ⇩⇩ LOG + WEBHOOK тутамд
+                    print(f"[POLL] {epic} -> bid={data.get('bid')} ask={data.get('ask')}")
+                    forward_to_webhook(epic, {"source": "ig", **data})
+
             time.sleep(POLL_EVERY_SEC)
+
         except requests.HTTPError as e:
-            if e.response is not None and e.response.status_code in (401,403):
+            if e.response is not None and e.response.status_code in (401, 403):
                 time.sleep(1)
                 cst, xsec = ig_login()
                 ig_set_account(cst, xsec)
@@ -93,9 +110,6 @@ def runner():
         except Exception:
             time.sleep(2)
 
-app = FastAPI()
-
-@app.get("/health")
 def health():
     return {"ok": True, "epics": EPICS}
 
