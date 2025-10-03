@@ -62,18 +62,51 @@ def ig_set_account(cst, xsec):
 
 # --- IG last price ---
 def ig_last_price(cst, xsec, epic):
-    url = f"{BASE}/prices"
-    params = {"epic": epic, "resolution": "SECOND", "max": 1}
-    h = {"X-IG-API-KEY": API_KEY, "CST": cst, "X-SECURITY-TOKEN": xsec, "Version": "3"}
-    r = requests.get(url, params=params, headers=h, timeout=15)
-    r.raise_for_status()
-    js = r.json()
-    prices = js.get("prices") or []
+    # 1) Эхлээд /markets/{epic} ашиглаж snapshot авах (хамгийн найдвартай)
+    url1 = f"{BASE}/markets/{epic}"
+    h = {
+        "X-IG-API-KEY": API_KEY,
+        "CST": cst,
+        "X-SECURITY-TOKEN": xsec,
+        "Accept": "application/json; charset=UTF-8",
+        "Version": "3",
+    }
+    r1 = requests.get(url1, headers=h, timeout=15)
+    if r1.status_code == 200:
+        js = r1.json() or {}
+        snap = js.get("snapshot") or {}
+        bid = snap.get("bid")
+        ask = snap.get("offer")
+        ts = snap.get("updateTimeUTC") or datetime.datetime.utcnow().isoformat()+"Z"
+        return {"epic": epic, "bid": bid, "ask": ask, "ts": ts}
+
+    # markets 404/бусад үед fallback → /prices/{epic}?resolution=MINUTE&max=1
+    if r1.status_code == 404:
+        print(f"[404 markets] {epic} -> {r1.text}")
+
+    url2 = f"{BASE}/prices/{epic}"
+    params = {"resolution": "MINUTE", "max": 1}
+    h2 = {
+        "X-IG-API-KEY": API_KEY,
+        "CST": cst,
+        "X-SECURITY-TOKEN": xsec,
+        "Accept": "application/json; charset=UTF-8",
+        "Version": "3",
+    }
+    r2 = requests.get(url2, params=params, headers=h2, timeout=15)
+    if r2.status_code == 404:
+        print(f"[404 prices] {epic} -> {r2.text}")
+        # 404 үед хоосон snapshot буцаагаад loop-г үргэлжлүүлнэ
+        return {"epic": epic, "bid": None, "ask": None, "ts": datetime.datetime.utcnow().isoformat()+"Z"}
+
+    r2.raise_for_status()
+    js2 = r2.json() or {}
+    prices = js2.get("prices") or []
     if not prices:
-        return {"epic": epic, "bid": None, "ask": None, "ts": datetime.datetime.utcnow().isoformat() + "Z"}
-    snap = prices[0]
-    ts = snap.get("updateTimeUTC") or datetime.datetime.utcnow().isoformat() + "Z"
-    return {"epic": epic, "bid": snap.get("bid"), "ask": snap.get("ask"), "ts": ts}
+        return {"epic": epic, "bid": None, "ask": None, "ts": datetime.datetime.utcnow().isoformat()+"Z"}
+    p = prices[0]
+    ts = p.get("updateTimeUTC") or datetime.datetime.utcnow().isoformat()+"Z"
+    return {"epic": epic, "bid": p.get("bid"), "ask": p.get("ask"), "ts": ts}
 
 # --- Webhook forward ---
 def forward_to_webhook(epic, data):
